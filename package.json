@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "main": "src/index.ts",
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
   "scripts": {
     "check": "node --experimental-strip-types -e \"import('./src/index.ts').catch((err) => { console.error(err); process.exit(1); })\"",
     "test": "node --experimental-strip-types --test test/*.test.ts"
