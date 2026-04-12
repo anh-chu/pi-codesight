@@ -101,13 +101,18 @@ export function readRoutes(root = '.', filters: { prefix?: string; tag?: string;
     return { content: readMissingMessage('routes', path, 'run `npx codesight`'), details: { filters, count: 0 } };
   }
 
-  const routes = bulletLinesFromSection(lines(content)).filter((route) => {
+  const section = extractSection(content, /^#\s+Routes$/i);
+  const routes: string[] = [];
+  for (const line of section) {
+    if (/^#{1,6}\s+/.test(line)) break;
+    if (!/^-[\s\t]+`[A-Z]+`\s+`[^`]+`/.test(line)) continue;
+    const route = line.replace(/^-\s+/, '').trim();
     const method = filters.method?.toUpperCase();
     const methodOk = !method || route.includes(`\`${method}\``);
     const prefixOk = !filters.prefix || route.includes(`\`${filters.prefix}\``) || route.includes(filters.prefix);
     const tagOk = !filters.tag || route.toLowerCase().includes(filters.tag.toLowerCase());
-    return methodOk && prefixOk && tagOk;
-  });
+    if (methodOk && prefixOk && tagOk) routes.push(route);
+  }
 
   return {
     content: formatCompactSection('Routes', routes.slice(0, 25).map((route) => `- ${route}`)),

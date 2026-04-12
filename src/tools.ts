@@ -116,48 +116,17 @@ function normalizeQueryResult(result: { content: string | string[]; details: Rec
   };
 }
 
-async function runRefresh(root: string, params: { wiki?: boolean; init?: boolean }): Promise<ToolResult> {
-  const wiki = params.wiki ?? (params.init ? false : true);
-  const init = params.init ?? false;
-  const commands: Array<{ args: string[]; label: string }> = [];
-
-  if (wiki) commands.push({ args: ['--wiki'], label: 'wiki' });
-  if (init) commands.push({ args: ['--init'], label: 'init' });
-  if (commands.length === 0) commands.push({ args: ['--wiki'], label: 'wiki' });
-
-  const results: Array<{ label: string; command: string; ok: boolean; exitCode: number; stdout: string; stderr: string; error?: string }> = [];
-
-  for (const command of commands) {
-    const result = await runCodesightImpl(command.args, root);
-    results.push({
-      label: command.label,
-      command: result.command,
-      ok: result.ok,
-      exitCode: result.exitCode,
-      stdout: result.stdout,
-      stderr: result.stderr,
-      error: result.error,
-    });
-    if (!result.ok) break;
-  }
-
-  const summaryLines = results.map((result) => {
-    const status = result.ok ? 'ok' : `failed (${result.exitCode})`;
-    return `- ${result.label}: ${status} — ${result.command}`;
-  });
-
-  if (results.some((result) => !result.ok)) {
-    const last = results[results.length - 1];
-    const failure = last?.error ?? last?.stderr?.trim() ?? 'codesight command failed';
-    return {
-      content: formatCompactSection('CodeSight refresh failed', [...summaryLines, `- error: ${truncateText(failure, 2000)}`]),
-      details: { executedCommands: results.map((result) => result.command), results },
-    };
-  }
-
+async function runRefresh(root: string): Promise<ToolResult> {
+  const result = await runCodesightImpl([], root);
+  const output = truncateText(result.stdout || result.stderr || 'No output returned.', 4000);
+  const header = result.ok ? 'CodeSight refreshed' : 'CodeSight refresh failed';
   return {
-    content: formatCompactSection('CodeSight refreshed', summaryLines),
-    details: { executedCommands: results.map((result) => result.command), results },
+    content: formatCompactSection(header, [
+      `- command: ${renderCodesightCommand([])}`,
+      `- status: ${result.ok ? 'ok' : `failed (${result.exitCode})`}`,
+      `- output: ${output}`,
+    ]),
+    details: { command: result.command, ok: result.ok, exitCode: result.exitCode, stderr: result.stderr },
   };
 }
 
@@ -279,8 +248,8 @@ export function registerCodesightTools(pi: any) {
       promptSnippet: 'Get environment variables detected by codesight',
       promptGuidelines: ['Use this tool for setup, config, and missing-env debugging questions.'],
       parameters: ENV_SCHEMA,
-      execute: async (_toolCallId: string, params: { directory?: string; requiredOnly?: boolean }) => {
-        const result = readEnv(rootForParams(params), params.requiredOnly ?? false);
+      execute: async (_toolCallId: string, params: { directory?: string; required_only?: boolean; requiredOnly?: boolean }) => {
+        const result = readEnv(rootForParams(params), params.required_only ?? params.requiredOnly ?? false);
         return textResult(result.content, result.details as Record<string, unknown>);
       },
     },
@@ -299,12 +268,12 @@ export function registerCodesightTools(pi: any) {
     {
       name: 'codesight_refresh',
       label: 'CodeSight Refresh',
-      description: 'Regenerate codesight artifacts on demand',
+      description: 'Re-scan CodeSight-generated artifacts',
       promptSnippet: 'Refresh codesight-generated repo context files',
-      promptGuidelines: ['Use when codesight files are missing or stale.'],
+      promptGuidelines: ['Use when codesight outputs are missing or stale.'],
       parameters: REFRESH_SCHEMA,
-      execute: async (_toolCallId: string, params: { directory?: string; wiki?: boolean; init?: boolean }) => {
-        const result = await runRefresh(rootForParams(params), { wiki: params.wiki, init: params.init });
+      execute: async (_toolCallId: string, params: { directory?: string }) => {
+        const result = await runRefresh(rootForParams(params));
         return textResult(result.content, result.details);
       },
     },
@@ -325,16 +294,10 @@ export function registerCodesightTools(pi: any) {
 
 export function registerCodesightCommands(pi: any) {
   pi.registerCommand('codesight-refresh', {
-    description: 'Refresh CodeSight-generated artifacts',
-    handler: async (args: string, ctx: any) => {
-      const selection = args.trim().toLowerCase();
-      const params = selection === 'all'
-        ? { wiki: true, init: true }
-        : selection === 'init'
-          ? { wiki: false, init: true }
-          : { wiki: true, init: false };
-      const result = await runRefresh(projectRoot('.'), params);
-      ctx.ui.notify(result.content, result.details.results?.some((entry: any) => !entry.ok) ? 'warning' : 'info');
+    description: 'Re-scan CodeSight-generated artifacts',
+    handler: async (_args: string, ctx: any) => {
+      const result = await runRefresh(projectRoot('.'));
+      ctx.ui.notify(result.content, result.details.ok ? 'info' : 'warning');
       emitSessionMessage(pi, 'refresh', result.content, result.details);
     },
   });
@@ -383,9 +346,6 @@ export function registerSessionNotice(pi: any) {
 
     if (status.stale) {
       ctx.ui.notify('CodeSight artifacts may be stale. Use /codesight-refresh when the repo changes.', 'warning');
-      return;
     }
-
-    ctx.ui.notify('CodeSight artifacts look fresh.', 'info');
   });
 }

@@ -64,22 +64,27 @@ test('registers slash commands and session hook', async () => {
 test('refresh command uses injected runner', async () => {
   const pi = fakePi();
   registerCodesightCommands(pi);
-  setCodesightRunnerForTest(async (args, cwd) => ({
-    command: ['npx', 'codesight', ...args].join(' '),
-    cwd,
-    exitCode: 0,
-    stdout: 'ok stdout',
-    stderr: '',
-    ok: true,
-  }));
+  let capturedArgs: string[] | null = null;
+  setCodesightRunnerForTest(async (args, cwd) => {
+    capturedArgs = args;
+    return {
+      command: ['npx', 'codesight', ...args].join(' '),
+      cwd,
+      exitCode: 0,
+      stdout: 'ok stdout',
+      stderr: '',
+      ok: true,
+    };
+  });
 
   try {
     const ctx = { ui: { notify: (message: string) => pi.messages.push({ kind: 'notify', message }) } };
     await pi.commands['codesight-refresh'].handler('', ctx);
+    assert.deepEqual(capturedArgs, []);
     assert.equal(pi.messages.some((entry) => entry.kind === 'notify' && /CodeSight refreshed/.test(entry.message)), true);
     assert.equal(pi.messages.some((entry) => entry.customType === 'codesight-refresh'), true);
   } finally {
-    setCodesightRunnerForTest((await import('../src/codesight.ts')).runCodesight);
+    setCodesightRunnerForTest(runCodesight);
   }
 });
 
@@ -152,4 +157,17 @@ test('blast command runs successful query', async () => {
   } finally {
     setCodesightRunnerForTest(runCodesight);
   }
+});
+
+test('env tool accepts upstream required_only alias', async () => {
+  const pi = fakePi();
+  registerCodesightTools(pi);
+  const envTool = pi.tools.find((tool: any) => tool.name === 'codesight_get_env');
+  const root = '/tmp/pi-codesight-alias';
+  const fs = await import('node:fs');
+  fs.mkdirSync(`${root}/.codesight`, { recursive: true });
+  fs.writeFileSync(`${root}/.codesight/config.md`, '# Config\n\n## Environment Variables\n\n- `API_KEY` **required** — source\n');
+
+  const result = await envTool.execute('1', { directory: root, required_only: true });
+  assert.match(result.content[0].text, /API_KEY/);
 });
