@@ -62,7 +62,7 @@ function onboardingResultText(result: { ok: boolean; exitCode: number; stdout: s
 
 async function runInitialSetup(root: string): Promise<ToolResult> {
   const results: Array<{ command: string; ok: boolean; exitCode: number; stdout: string; stderr: string }> = [];
-  for (const args of [['--wiki'], ['--init']]) {
+  for (const args of [['--wiki'], ['--init'], ['--hook']]) {
     const result = await runCodesightImpl(args, root);
     results.push(result);
     if (!result.ok) break;
@@ -407,7 +407,7 @@ export function registerSessionNotice(pi: any) {
       const confirmed = ctx.ui.confirm
         ? await ctx.ui.confirm(
           'Generate CodeSight artifacts?',
-          'Run `npx codesight --wiki` and `npx codesight --init` for this project now?',
+          'Run `npx codesight --wiki`, `npx codesight --init`, and `npx codesight --hook` for this project now?',
         )
         : false;
       markOnboardingPromptSeen();

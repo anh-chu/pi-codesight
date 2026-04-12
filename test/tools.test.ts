@@ -241,7 +241,7 @@ test('session start onboarding can run initial setup', async () => {
       },
     };
     await pi.events.session_start[0](null, ctx);
-    assert.deepEqual(calls, [['--wiki'], ['--init']]);
+    assert.deepEqual(calls, [['--wiki'], ['--init'], ['--hook']]);
     assert.equal(pi.messages.some((entry) => entry.customType === 'codesight-onboarding'), true);
   } finally {
     setCodesightRunnerForTest(runCodesight);
