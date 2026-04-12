@@ -1,3 +1,6 @@
+import { existsSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { formatCompactSection, truncateText } from './format.ts';
 import { projectRoot, renderCodesightCommand, resolveProjectPath, runCodesight } from './codesight.ts';
 import {
@@ -10,6 +13,13 @@ import {
   readWikiIndex,
 } from './queries.ts';
 import { getArtifactStatus } from './stale.ts';
+
+const PACKAGE_ROOT = dirname(fileURLToPath(import.meta.url));
+let onboardingFlagPath = join(PACKAGE_ROOT, '.codesight-onboarding-shown');
+
+export function setOnboardingFlagPathForTest(path: string) {
+  onboardingFlagPath = path;
+}
 
 let runCodesightImpl = runCodesight;
 let getArtifactStatusImpl = getArtifactStatus;
@@ -29,6 +39,61 @@ const ROOT_SCHEMA = {
   },
 };
 
+
+function onboardingPromptSeen() {
+  return existsSync(onboardingFlagPath);
+}
+
+function markOnboardingPromptSeen() {
+  try {
+    writeFileSync(onboardingFlagPath, 'seen');
+  } catch {
+    // ignore
+  }
+}
+
+function onboardingResultText(result: { ok: boolean; exitCode: number; stdout: string; stderr: string; command: string }) {
+  return formatCompactSection(result.ok ? 'CodeSight setup completed' : 'CodeSight setup failed', [
+    '- command: ' + result.command,
+    '- status: ' + (result.ok ? 'ok' : 'failed (' + result.exitCode + ')'),
+    '- output: ' + truncateText(result.stdout || result.stderr || 'No output returned.', 3000),
+  ]);
+}
+
+async function runInitialSetup(root: string): Promise<ToolResult> {
+  const results: Array<{ command: string; ok: boolean; exitCode: number; stdout: string; stderr: string }> = [];
+  for (const args of [['--wiki'], ['--init']]) {
+    const result = await runCodesightImpl(args, root);
+    results.push(result);
+    if (!result.ok) break;
+  }
+
+  const failed = results.find((result) => !result.ok);
+  if (failed) {
+    return {
+      content: onboardingResultText(failed),
+      details: {
+        executedCommands: results.map((result) => result.command),
+        results,
+        ok: false,
+      },
+    };
+  }
+
+  const final = results[results.length - 1];
+  return {
+    content: formatCompactSection('CodeSight setup completed', [
+      '- command: ' + results.map((result) => result.command).join(' && '),
+      '- status: ok',
+      '- output: ' + truncateText(final?.stdout || 'Setup complete.', 3000),
+    ]),
+    details: {
+      executedCommands: results.map((result) => result.command),
+      results,
+      ok: true,
+    },
+  };
+}
 const ROUTE_SCHEMA = {
   type: 'object',
   properties: {
@@ -338,6 +403,22 @@ export function registerCodesightCommands(pi: any) {
 
 export function registerSessionNotice(pi: any) {
   pi.on('session_start', async (_event: unknown, ctx: any) => {
+    if (!onboardingPromptSeen()) {
+      const confirmed = ctx.ui.confirm
+        ? await ctx.ui.confirm(
+          'Generate CodeSight artifacts?',
+          'Run `npx codesight --wiki` and `npx codesight --init` for this project now?',
+        )
+        : false;
+      markOnboardingPromptSeen();
+      if (confirmed) {
+        const result = await runInitialSetup(projectRoot('.'));
+        ctx.ui.notify(result.content, result.details.ok ? 'info' : 'warning');
+        emitSessionMessage(pi, 'onboarding', result.content, result.details);
+      }
+      return;
+    }
+
     const status = getArtifactStatusImpl(projectRoot('.'));
     if (status.missing.length > 0) {
       ctx.ui.notify(`CodeSight artifacts missing: ${status.missing.join(', ')}. Use /codesight-refresh.`, 'warning');

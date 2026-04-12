@@ -1,11 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   registerCodesightCommands,
   registerCodesightTools,
   registerSessionNotice,
   setArtifactStatusProviderForTest,
   setCodesightRunnerForTest,
+  setOnboardingFlagPathForTest,
 } from '../src/tools.ts';
 import { runCodesight } from '../src/codesight.ts';
 
@@ -104,11 +108,17 @@ test('session notice warns on missing artifacts', async () => {
   registerSessionNotice(pi);
   setArtifactStatusProviderForTest(() => ({ files: [], missing: ['.codesight/wiki/index.md'], stale: false }));
 
+  const markerRoot = mkdtempSync(join(tmpdir(), 'pi-codesight-onboard-'));
+  const markerPath = join(markerRoot, 'marker');
+  writeFileSync(markerPath, 'seen');
+  setOnboardingFlagPathForTest(markerPath);
+
   try {
-    const ctx = { ui: { notify: (message: string, level: string) => pi.messages.push({ kind: 'notify', message, level }) } };
+    const ctx = { ui: { confirm: async () => false, notify: (message: string, level: string) => pi.messages.push({ kind: 'notify', message, level }) } };
     await pi.events.session_start[0](null, ctx);
     assert.match(pi.messages[0].message, /artifacts missing/);
   } finally {
+    setOnboardingFlagPathForTest(join(process.cwd(), '.codesight-onboarding-shown'));
     setArtifactStatusProviderForTest((await import('../src/stale.ts')).getArtifactStatus);
   }
 });
@@ -163,11 +173,79 @@ test('env tool accepts upstream required_only alias', async () => {
   const pi = fakePi();
   registerCodesightTools(pi);
   const envTool = pi.tools.find((tool: any) => tool.name === 'codesight_get_env');
-  const root = '/tmp/pi-codesight-alias';
-  const fs = await import('node:fs');
-  fs.mkdirSync(`${root}/.codesight`, { recursive: true });
-  fs.writeFileSync(`${root}/.codesight/config.md`, '# Config\n\n## Environment Variables\n\n- `API_KEY` **required** — source\n');
+  const root = mkdtempSync(join(tmpdir(), 'pi-codesight-alias-'));
+  mkdirSync(join(root, '.codesight'), { recursive: true });
+  writeFileSync(join(root, '.codesight/config.md'), '# Config\n\n## Environment Variables\n\n- `API_KEY` **required** — source\n');
 
   const result = await envTool.execute('1', { directory: root, required_only: true });
   assert.match(result.content[0].text, /API_KEY/);
+});
+
+test('session start prompts once on first install', async () => {
+  const pi = fakePi();
+  registerSessionNotice(pi);
+  setArtifactStatusProviderForTest(() => ({ files: [], missing: [], stale: false }));
+
+  const markerRoot = mkdtempSync(join(tmpdir(), 'pi-codesight-onboard-'));
+  const markerPath = join(markerRoot, 'marker');
+  setOnboardingFlagPathForTest(markerPath);
+
+  let confirmCalls = 0;
+  const ctx = {
+    ui: {
+      confirm: async () => {
+        confirmCalls += 1;
+        return false;
+      },
+      notify: (_message: string, _level: string) => {},
+    },
+  };
+
+  try {
+    await pi.events.session_start[0](null, ctx);
+    await pi.events.session_start[0](null, ctx);
+    assert.equal(confirmCalls, 1);
+  } finally {
+    setOnboardingFlagPathForTest(join(process.cwd(), '.codesight-onboarding-shown'));
+    setArtifactStatusProviderForTest((await import('../src/stale.ts')).getArtifactStatus);
+  }
+});
+
+test('session start onboarding can run initial setup', async () => {
+  const pi = fakePi();
+  registerSessionNotice(pi);
+  setArtifactStatusProviderForTest(() => ({ files: [], missing: [], stale: false }));
+
+  const markerRoot = mkdtempSync(join(tmpdir(), 'pi-codesight-onboard-'));
+  const markerPath = join(markerRoot, 'marker');
+  setOnboardingFlagPathForTest(markerPath);
+
+  const calls: string[][] = [];
+  setCodesightRunnerForTest(async (args, cwd) => {
+    calls.push(args);
+    return {
+      command: ['npx', 'codesight', ...args].join(' '),
+      cwd,
+      exitCode: 0,
+      stdout: args.join(' '),
+      stderr: '',
+      ok: true,
+    };
+  });
+
+  try {
+    const ctx = {
+      ui: {
+        confirm: async () => true,
+        notify: (_message: string, _level: string) => {},
+      },
+    };
+    await pi.events.session_start[0](null, ctx);
+    assert.deepEqual(calls, [['--wiki'], ['--init']]);
+    assert.equal(pi.messages.some((entry) => entry.customType === 'codesight-onboarding'), true);
+  } finally {
+    setCodesightRunnerForTest(runCodesight);
+    setOnboardingFlagPathForTest(join(process.cwd(), '.codesight-onboarding-shown'));
+    setArtifactStatusProviderForTest((await import('../src/stale.ts')).getArtifactStatus);
+  }
 });
