@@ -1,0 +1,391 @@
+import { formatCompactSection, truncateText } from './format.ts';
+import { projectRoot, renderCodesightCommand, resolveProjectPath, runCodesight } from './codesight.ts';
+import {
+  readEnv,
+  readHotFiles,
+  readRoutes,
+  readSchema,
+  readSummary,
+  readWikiArticle,
+  readWikiIndex,
+} from './queries.ts';
+import { getArtifactStatus } from './stale.ts';
+
+let runCodesightImpl = runCodesight;
+let getArtifactStatusImpl = getArtifactStatus;
+
+export function setCodesightRunnerForTest(fn: typeof runCodesight) {
+  runCodesightImpl = fn;
+}
+
+export function setArtifactStatusProviderForTest(fn: typeof getArtifactStatus) {
+  getArtifactStatusImpl = fn;
+}
+
+const ROOT_SCHEMA = {
+  type: 'object',
+  properties: {
+    directory: { type: 'string', description: 'Project directory to read from' },
+  },
+};
+
+const ROUTE_SCHEMA = {
+  type: 'object',
+  properties: {
+    directory: { type: 'string', description: 'Project directory to read from' },
+    prefix: { type: 'string', description: 'Filter routes by path prefix like /api/users' },
+    tag: { type: 'string', description: 'Filter routes by tag or subsystem label' },
+    method: { type: 'string', description: 'Filter by HTTP method like GET, POST, PUT, DELETE' },
+  },
+};
+
+const SCHEMA_SCHEMA = {
+  type: 'object',
+  properties: {
+    directory: { type: 'string', description: 'Project directory to read from' },
+    model: { type: 'string', description: 'Filter schema by model name' },
+  },
+};
+
+const BLAST_SCHEMA = {
+  type: 'object',
+  properties: {
+    directory: { type: 'string', description: 'Project directory to read from' },
+    file: { type: 'string', description: 'Project-relative file path to analyze' },
+    depth: { type: 'number', description: 'Max traversal depth', minimum: 1, maximum: 20 },
+  },
+  required: ['file'],
+};
+
+const ENV_SCHEMA = {
+  type: 'object',
+  properties: {
+    directory: { type: 'string', description: 'Project directory to read from' },
+    requiredOnly: { type: 'boolean', description: 'If true, only return required environment variables' },
+  },
+};
+
+const HOT_FILES_SCHEMA = {
+  type: 'object',
+  properties: {
+    directory: { type: 'string', description: 'Project directory to read from' },
+    limit: { type: 'number', description: 'Maximum number of files to return', minimum: 1, maximum: 50 },
+  },
+};
+
+const REFRESH_SCHEMA = {
+  type: 'object',
+  properties: {
+    directory: { type: 'string', description: 'Project directory to refresh' },
+    wiki: { type: 'boolean', description: 'Generate wiki artifacts' },
+    init: { type: 'boolean', description: 'Generate AGENTS.md and related AI context files' },
+  },
+};
+
+type ToolResult = {
+  content: string;
+  details: Record<string, unknown>;
+};
+
+function textResult(content: string, details: Record<string, unknown> = {}) {
+  return {
+    content: [{ type: 'text', text: content }],
+    details,
+  };
+}
+
+function rootForParams(params: { directory?: string }) {
+  return projectRoot(params.directory ?? '.');
+}
+
+function extractText(value: unknown) {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => (item && typeof item === 'object' && 'text' in item ? String((item as { text?: unknown }).text ?? '') : ''))
+      .filter(Boolean)
+      .join('\n');
+  }
+  return '';
+}
+
+function normalizeQueryResult(result: { content: string | string[]; details: Record<string, unknown> }): ToolResult {
+  return {
+    content: extractText(result.content),
+    details: result.details,
+  };
+}
+
+async function runRefresh(root: string, params: { wiki?: boolean; init?: boolean }): Promise<ToolResult> {
+  const wiki = params.wiki ?? (params.init ? false : true);
+  const init = params.init ?? false;
+  const commands: Array<{ args: string[]; label: string }> = [];
+
+  if (wiki) commands.push({ args: ['--wiki'], label: 'wiki' });
+  if (init) commands.push({ args: ['--init'], label: 'init' });
+  if (commands.length === 0) commands.push({ args: ['--wiki'], label: 'wiki' });
+
+  const results: Array<{ label: string; command: string; ok: boolean; exitCode: number; stdout: string; stderr: string; error?: string }> = [];
+
+  for (const command of commands) {
+    const result = await runCodesightImpl(command.args, root);
+    results.push({
+      label: command.label,
+      command: result.command,
+      ok: result.ok,
+      exitCode: result.exitCode,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      error: result.error,
+    });
+    if (!result.ok) break;
+  }
+
+  const summaryLines = results.map((result) => {
+    const status = result.ok ? 'ok' : `failed (${result.exitCode})`;
+    return `- ${result.label}: ${status} — ${result.command}`;
+  });
+
+  if (results.some((result) => !result.ok)) {
+    const last = results[results.length - 1];
+    const failure = last?.error ?? last?.stderr?.trim() ?? 'codesight command failed';
+    return {
+      content: formatCompactSection('CodeSight refresh failed', [...summaryLines, `- error: ${truncateText(failure, 2000)}`]),
+      details: { executedCommands: results.map((result) => result.command), results },
+    };
+  }
+
+  return {
+    content: formatCompactSection('CodeSight refreshed', summaryLines),
+    details: { executedCommands: results.map((result) => result.command), results },
+  };
+}
+
+function emitSessionMessage(pi: any, kind: string, content: string, details: Record<string, unknown>) {
+  pi.sendMessage({
+    customType: `codesight-${kind}`,
+    content,
+    display: true,
+    details,
+  });
+}
+
+export function registerCodesightTools(pi: any) {
+  const toolDefinitions = [
+    {
+      name: 'codesight_get_wiki_index',
+      label: 'CodeSight Wiki Index',
+      description: 'Read the codesight wiki index for fast repo orientation',
+      promptSnippet: 'Read codesight wiki catalog for fast repo orientation',
+      promptGuidelines: ['Use this tool at session start or before broad repo questions.'],
+      parameters: ROOT_SCHEMA,
+      execute: async (_toolCallId: string, params: { directory?: string }) => {
+        const result = readWikiIndex(rootForParams(params));
+        return textResult(result.content, result.details as Record<string, unknown>);
+      },
+    },
+    {
+      name: 'codesight_get_wiki_article',
+      label: 'CodeSight Wiki Article',
+      description: 'Read one codesight wiki article by subsystem name',
+      promptSnippet: 'Read one codesight wiki article by subsystem name',
+      promptGuidelines: ['Use this tool for subsystem questions like auth, database, payments, or architecture.'],
+      parameters: {
+        type: 'object',
+        properties: {
+          directory: { type: 'string', description: 'Project directory to read from' },
+          article: { type: 'string', description: 'Wiki article name like auth, database, payments, overview' },
+        },
+        required: ['article'],
+      },
+      execute: async (_toolCallId: string, params: { directory?: string; article: string }) => {
+        const result = readWikiArticle(rootForParams(params), params.article);
+        return textResult(result.content, result.details as Record<string, unknown>);
+      },
+    },
+    {
+      name: 'codesight_get_summary',
+      label: 'CodeSight Summary',
+      description: 'Get compact codesight project overview',
+      promptSnippet: 'Get compact codesight project overview',
+      promptGuidelines: ['Use this tool for broad orientation before implementation work.'],
+      parameters: ROOT_SCHEMA,
+      execute: async (_toolCallId: string, params: { directory?: string }) => {
+        const result = readSummary(rootForParams(params));
+        return textResult(result.content, result.details as Record<string, unknown>);
+      },
+    },
+    {
+      name: 'codesight_get_routes',
+      label: 'CodeSight Routes',
+      description: 'Get routes filtered by prefix, tag, or HTTP method',
+      promptSnippet: 'Get codesight routes filtered by prefix, tag, or method',
+      promptGuidelines: ['Use this tool when the user asks what endpoints exist.', 'Use filters before opening route files manually.'],
+      parameters: ROUTE_SCHEMA,
+      execute: async (_toolCallId: string, params: { directory?: string; prefix?: string; tag?: string; method?: string }) => {
+        const result = readRoutes(rootForParams(params), { prefix: params.prefix, tag: params.tag, method: params.method });
+        return textResult(result.content, result.details as Record<string, unknown>);
+      },
+    },
+    {
+      name: 'codesight_get_schema',
+      label: 'CodeSight Schema',
+      description: 'Get schema or one model summary',
+      promptSnippet: 'Get codesight schema or one model summary',
+      promptGuidelines: ['Use this tool for model, table, relation, and field questions.'],
+      parameters: SCHEMA_SCHEMA,
+      execute: async (_toolCallId: string, params: { directory?: string; model?: string }) => {
+        const result = readSchema(rootForParams(params), params.model);
+        return textResult(result.content, result.details as Record<string, unknown>);
+      },
+    },
+    {
+      name: 'codesight_get_blast_radius',
+      label: 'CodeSight Blast Radius',
+      description: 'Analyze impact before changing a file',
+      promptSnippet: 'Analyze blast radius for file changes using codesight graph',
+      promptGuidelines: ['Use this tool when the user asks what might break if a file changes.', 'Use before risky edits to estimate affected files and tests.'],
+      parameters: BLAST_SCHEMA,
+      execute: async (_toolCallId: string, params: { directory?: string; file: string; depth?: number }) => {
+        const root = rootForParams(params);
+        const target = resolveProjectPath(root, params.file);
+        if (!target) {
+          return textResult(
+            formatCompactSection('Invalid blast target', [`- file: ${params.file}`, `- root: ${root}`, '- hint: file must stay inside the selected project root']),
+            { file: params.file, root, ok: false },
+          );
+        }
+
+        const args = ['--blast', params.file];
+        if (typeof params.depth === 'number') args.push('--depth', String(params.depth));
+        const result = await runCodesightImpl(args, root);
+        const output = truncateText(result.stdout || result.stderr || 'No output returned.', 4000);
+        const header = result.ok ? 'CodeSight blast radius' : 'CodeSight blast radius failed';
+        return textResult(
+          formatCompactSection(header, [
+            `- file: ${params.file}`,
+            `- command: ${renderCodesightCommand(args)}`,
+            `- status: ${result.ok ? 'ok' : `failed (${result.exitCode})`}`,
+            `- output: ${output}`,
+          ]),
+          { file: params.file, root, command: result.command, ok: result.ok, exitCode: result.exitCode, stderr: result.stderr },
+        );
+      },
+    },
+    {
+      name: 'codesight_get_env',
+      label: 'CodeSight Env',
+      description: 'Get environment variables detected by codesight',
+      promptSnippet: 'Get environment variables detected by codesight',
+      promptGuidelines: ['Use this tool for setup, config, and missing-env debugging questions.'],
+      parameters: ENV_SCHEMA,
+      execute: async (_toolCallId: string, params: { directory?: string; requiredOnly?: boolean }) => {
+        const result = readEnv(rootForParams(params), params.requiredOnly ?? false);
+        return textResult(result.content, result.details as Record<string, unknown>);
+      },
+    },
+    {
+      name: 'codesight_get_hot_files',
+      label: 'CodeSight Hot Files',
+      description: 'Get the most imported high-impact files',
+      promptSnippet: 'Get most imported high-impact files from codesight',
+      promptGuidelines: ['Use this tool for orientation and risk estimation before broad refactors.'],
+      parameters: HOT_FILES_SCHEMA,
+      execute: async (_toolCallId: string, params: { directory?: string; limit?: number }) => {
+        const result = readHotFiles(rootForParams(params), params.limit ?? 10);
+        return textResult(result.content, result.details as Record<string, unknown>);
+      },
+    },
+    {
+      name: 'codesight_refresh',
+      label: 'CodeSight Refresh',
+      description: 'Regenerate codesight artifacts on demand',
+      promptSnippet: 'Refresh codesight-generated repo context files',
+      promptGuidelines: ['Use when codesight files are missing or stale.'],
+      parameters: REFRESH_SCHEMA,
+      execute: async (_toolCallId: string, params: { directory?: string; wiki?: boolean; init?: boolean }) => {
+        const result = await runRefresh(rootForParams(params), { wiki: params.wiki, init: params.init });
+        return textResult(result.content, result.details);
+      },
+    },
+  ] as const;
+
+  for (const definition of toolDefinitions) {
+    pi.registerTool({
+      name: definition.name,
+      label: definition.label,
+      description: definition.description,
+      promptSnippet: definition.promptSnippet,
+      promptGuidelines: definition.promptGuidelines,
+      parameters: definition.parameters,
+      execute: definition.execute,
+    });
+  }
+}
+
+export function registerCodesightCommands(pi: any) {
+  pi.registerCommand('codesight-refresh', {
+    description: 'Refresh CodeSight-generated artifacts',
+    handler: async (args: string, ctx: any) => {
+      const selection = args.trim().toLowerCase();
+      const params = selection === 'all'
+        ? { wiki: true, init: true }
+        : selection === 'init'
+          ? { wiki: false, init: true }
+          : { wiki: true, init: false };
+      const result = await runRefresh(projectRoot('.'), params);
+      ctx.ui.notify(result.content, result.details.results?.some((entry: any) => !entry.ok) ? 'warning' : 'info');
+      emitSessionMessage(pi, 'refresh', result.content, result.details);
+    },
+  });
+
+  pi.registerCommand('wiki', {
+    description: 'Read the CodeSight wiki index or article',
+    handler: async (args: string, ctx: any) => {
+      const article = args.trim();
+      const result = article ? normalizeQueryResult(readWikiArticle(projectRoot('.'), article)) : normalizeQueryResult(readWikiIndex(projectRoot('.')));
+      ctx.ui.notify(result.content, 'info');
+      emitSessionMessage(pi, 'wiki', result.content, result.details);
+    },
+  });
+
+  pi.registerCommand('blast', {
+    description: 'Run a CodeSight blast-radius query for a file',
+    handler: async (args: string, ctx: any) => {
+      const file = args.trim();
+      if (!file) {
+        ctx.ui.notify('Usage: /blast <file>', 'warning');
+        return;
+      }
+
+      const root = projectRoot('.');
+      const target = resolveProjectPath(root, file);
+      if (!target) {
+        ctx.ui.notify('Blast target must stay inside the project root', 'warning');
+        return;
+      }
+
+      const result = await runCodesightImpl(['--blast', file], root);
+      const text = truncateText(result.stdout || result.stderr || 'No output returned.', 4000);
+      ctx.ui.notify(text, result.ok ? 'info' : 'warning');
+      emitSessionMessage(pi, 'blast', text, { file, command: result.command, ok: result.ok, exitCode: result.exitCode });
+    },
+  });
+}
+
+export function registerSessionNotice(pi: any) {
+  pi.on('session_start', async (_event: unknown, ctx: any) => {
+    const status = getArtifactStatusImpl(projectRoot('.'));
+    if (status.missing.length > 0) {
+      ctx.ui.notify(`CodeSight artifacts missing: ${status.missing.join(', ')}. Use /codesight-refresh.`, 'warning');
+      return;
+    }
+
+    if (status.stale) {
+      ctx.ui.notify('CodeSight artifacts may be stale. Use /codesight-refresh when the repo changes.', 'warning');
+      return;
+    }
+
+    ctx.ui.notify('CodeSight artifacts look fresh.', 'info');
+  });
+}

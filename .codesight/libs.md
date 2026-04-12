@@ -1,0 +1,37 @@
+# Libraries
+
+- `src/codesight.ts`
+  - function projectRoot: (directory) => void
+  - function codesightArtifactsRoot: () => void
+  - function artifactPath: (root, ...parts) => void
+  - function readTextIfExists: (path) => void
+  - function quoteShellArg: (value) => void
+  - function renderCodesightCommand: (args) => void
+  - _...4 more_
+- `src/commands.ts` — function registerCommands: (pi) => void
+- `src/format.ts`
+  - function formatCompactSection: (title, lines) => void
+  - function formatKeyValueList: (title, entries) => void
+  - function truncateText: (text, max) => void
+  - function toTextLines: (value) => void
+  - function bulletize: (lines) => void
+- `src/queries.ts`
+  - function readWikiIndex: (root) => void
+  - function readWikiArticle: (root, article) => void
+  - function readSummary: (root) => void
+  - function readRoutes: (root, filters) => void
+  - function readSchema: (root, model?) => void
+  - function readEnv: (root, requiredOnly) => void
+  - _...1 more_
+- `src/stale.ts`
+  - function getArtifactStatus: (root) => void
+  - function isStalePlaceholder: () => boolean
+  - function formatArtifactStatus: (root) => void
+  - interface ArtifactFileStatus
+  - interface ArtifactStatus
+- `src/tools.ts`
+  - function setCodesightRunnerForTest: (fn) => void
+  - function setArtifactStatusProviderForTest: (fn) => void
+  - function registerCodesightTools: (pi) => void
+  - function registerCodesightCommands: (pi) => void
+  - function registerSessionNotice: (pi) => void
