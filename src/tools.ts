@@ -195,6 +195,41 @@ async function runRefresh(root: string): Promise<ToolResult> {
   };
 }
 
+async function runInitSetup(root: string): Promise<ToolResult> {
+  const results: Array<{ command: string; ok: boolean; exitCode: number; stdout: string; stderr: string }> = [];
+  for (const args of [['--wiki'], ['--init']]) {
+    const result = await runCodesightImpl(args, root);
+    results.push(result);
+    if (!result.ok) break;
+  }
+
+  const failed = results.find((result) => !result.ok);
+  if (failed) {
+    return {
+      content: onboardingResultText(failed),
+      details: {
+        executedCommands: results.map((result) => result.command),
+        results,
+        ok: false,
+      },
+    };
+  }
+
+  const final = results[results.length - 1];
+  return {
+    content: formatCompactSection('CodeSight init completed', [
+      '- command: ' + results.map((result) => result.command).join(' && '),
+      '- status: ok',
+      '- output: ' + truncateText(final?.stdout || 'Setup complete.', 3000),
+    ]),
+    details: {
+      executedCommands: results.map((result) => result.command),
+      results,
+      ok: true,
+    },
+  };
+}
+
 function emitSessionMessage(pi: any, kind: string, content: string, details: Record<string, unknown>) {
   pi.sendMessage({
     customType: `codesight-${kind}`,
@@ -367,6 +402,15 @@ export function registerCodesightCommands(pi: any) {
     },
   });
 
+  pi.registerCommand('codesight-init', {
+    description: 'Generate CodeSight wiki and AI context artifacts',
+    handler: async (_args: string, ctx: any) => {
+      const result = await runInitSetup(projectRoot('.'));
+      ctx.ui.notify(result.content, result.details.ok ? 'info' : 'warning');
+      emitSessionMessage(pi, 'init', result.content, result.details);
+    },
+  });
+
   pi.registerCommand('wiki', {
     description: 'Read the CodeSight wiki index or article',
     handler: async (args: string, ctx: any) => {
@@ -403,6 +447,18 @@ export function registerCodesightCommands(pi: any) {
 
 export function registerSessionNotice(pi: any) {
   pi.on('session_start', async (_event: unknown, ctx: any) => {
+    const status = getArtifactStatusImpl(projectRoot('.'));
+    if (status.missing.length > 0) {
+      const needsInit = status.missing.some((path) => path.endsWith('AGENTS.md'));
+      ctx.ui.notify(
+        needsInit
+          ? 'CodeSight setup incomplete: AGENTS.md missing. Use /codesight-init.'
+          : `CodeSight artifacts missing: ${status.missing.join(', ')}. Use /codesight-refresh.`,
+        'warning',
+      );
+      return;
+    }
+
     if (!onboardingPromptSeen()) {
       const confirmed = ctx.ui.confirm
         ? await ctx.ui.confirm(
@@ -416,12 +472,6 @@ export function registerSessionNotice(pi: any) {
         ctx.ui.notify(result.content, result.details.ok ? 'info' : 'warning');
         emitSessionMessage(pi, 'onboarding', result.content, result.details);
       }
-      return;
-    }
-
-    const status = getArtifactStatusImpl(projectRoot('.'));
-    if (status.missing.length > 0) {
-      ctx.ui.notify(`CodeSight artifacts missing: ${status.missing.join(', ')}. Use /codesight-refresh.`, 'warning');
       return;
     }
 

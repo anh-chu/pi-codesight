@@ -56,6 +56,7 @@ test('registers slash commands and session hook', async () => {
   registerSessionNotice(pi);
 
   assert.equal(typeof pi.commands['codesight-refresh'].handler, 'function');
+  assert.equal(typeof pi.commands['codesight-init'].handler, 'function');
   assert.equal(typeof pi.commands.wiki.handler, 'function');
   assert.equal(typeof pi.commands.blast.handler, 'function');
   assert.ok(pi.events.session_start?.length > 0);
@@ -92,6 +93,33 @@ test('refresh command uses injected runner', async () => {
   }
 });
 
+test('init command runs wiki and init', async () => {
+  const pi = fakePi();
+  registerCodesightCommands(pi);
+  let capturedArgs: string[][] = [];
+  setCodesightRunnerForTest(async (args, cwd) => {
+    capturedArgs.push(args);
+    return {
+      command: ['npx', 'codesight', ...args].join(' '),
+      cwd,
+      exitCode: 0,
+      stdout: args.join(' '),
+      stderr: '',
+      ok: true,
+    };
+  });
+
+  try {
+    const ctx = { ui: { notify: (message: string, level: string) => pi.messages.push({ kind: 'notify', message, level }) } };
+    await pi.commands['codesight-init'].handler('', ctx);
+    assert.deepEqual(capturedArgs, [['--wiki'], ['--init']]);
+    assert.equal(pi.messages.some((entry) => entry.customType === 'codesight-init'), true);
+    assert.equal(pi.messages.some((entry) => entry.kind === 'notify' && entry.level === 'info'), true);
+  } finally {
+    setCodesightRunnerForTest(runCodesight);
+  }
+});
+
 test('blast command rejects escape path', async () => {
   const pi = fakePi();
   registerCodesightCommands(pi);
@@ -106,7 +134,7 @@ test('blast command rejects escape path', async () => {
 test('session notice warns on missing artifacts', async () => {
   const pi = fakePi();
   registerSessionNotice(pi);
-  setArtifactStatusProviderForTest(() => ({ files: [], missing: ['.codesight/wiki/index.md'], stale: false }));
+  setArtifactStatusProviderForTest(() => ({ files: [], missing: ['AGENTS.md'], stale: false }));
 
   const markerRoot = mkdtempSync(join(tmpdir(), 'pi-codesight-onboard-'));
   const markerPath = join(markerRoot, 'marker');
@@ -116,7 +144,7 @@ test('session notice warns on missing artifacts', async () => {
   try {
     const ctx = { ui: { confirm: async () => false, notify: (message: string, level: string) => pi.messages.push({ kind: 'notify', message, level }) } };
     await pi.events.session_start[0](null, ctx);
-    assert.match(pi.messages[0].message, /artifacts missing/);
+    assert.match(pi.messages[0].message, /Use \/codesight-init\./);
   } finally {
     setOnboardingFlagPathForTest(join(process.cwd(), '.codesight-onboarding-shown'));
     setArtifactStatusProviderForTest((await import('../src/stale.ts')).getArtifactStatus);
