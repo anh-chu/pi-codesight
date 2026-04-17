@@ -13,6 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -21,8 +23,27 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run check
+      - name: Check package.json version changed
+        id: version_check
+        if: github.ref == 'refs/heads/main'
+        run: |
+          CURRENT_VERSION=$(node -p "JSON.parse(require('node:fs').readFileSync('package.json', 'utf8')).version")
+          PREV_PACKAGE_JSON=$(git show HEAD^:package.json 2>/dev/null || true)
+
+          if [ -z "$PREV_PACKAGE_JSON" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          PREV_VERSION=$(echo "$PREV_PACKAGE_JSON" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>process.stdout.write(JSON.parse(d).version));")
+
+          if [ "$CURRENT_VERSION" = "$PREV_VERSION" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
       - name: Publish to npm
-        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' || (github.ref == 'refs/heads/main' && steps.version_check.outputs.changed == 'true')
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
