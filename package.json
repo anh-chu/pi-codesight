@@ -1,15 +1,44 @@
 {
   "name": "pi-codesight",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "main": "src/index.ts",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "codesight",
+    "developer-tools"
+  ],
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "pi": {
-    "extensions": ["./src/index.ts"]
+    "extensions": [
+      "src/index.ts"
+    ]
   },
   "scripts": {
     "check": "node --experimental-strip-types -e \"import('./src/index.ts').catch((err) => { console.error(err); process.exit(1); })\"",
     "test": "node --experimental-strip-types --test test/*.test.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/anh-chu/pi-codesight.git"
+  },
+  "homepage": "https://github.com/anh-chu/pi-codesight#readme",
+  "bugs": {
+    "url": "https://github.com/anh-chu/pi-codesight/issues"
   },
   "dependencies": {}
 }
