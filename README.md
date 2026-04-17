@@ -2,7 +2,9 @@
 
 CodeSight repository-context tools for Pi.
 
-`pi-codesight` gives Pi fast repo orientation from generated `.codesight/` artifacts, routes, schema, env config, wiki pages, hot files, and blast radius. Goal: answer broad architecture questions fast, before deeper symbol-level navigation.
+`pi-codesight` gives Pi fast repo orientation from generated `.codesight/` artifacts, routes, schema, env config, wiki pages, hot files, and blast radius.
+
+Upstream analyzer: [Houseofmvps/codesight](https://github.com/Houseofmvps/codesight)
 
 ## Install
 
@@ -22,7 +24,8 @@ Or via npm directly:
 npm install pi-codesight
 ```
 
-Pi loads extension via `package.json.pi.extensions`. If new slash commands or tools do not show, run `pi update` or reinstall package.
+Pi loads extension via `package.json.pi.extensions`.
+If new tools or slash commands do not appear, run `pi update` or reinstall package.
 
 ## Why it exists
 
@@ -33,71 +36,188 @@ Big coding tasks start with discovery:
 - what breaks if file changes
 - which env vars matter
 
-Reading source tree file-by-file slow. `pi-codesight` uses prebuilt artifacts so Pi can answer these quickly, then hand off to symbol-level tools when needed.
+`pi-codesight` reads prebuilt CodeSight artifacts first, then agent can move to symbol-level tools (`pi_lsp_*`, `lsp_navigation`) after file/symbol grounding.
 
 ## Value props
 
-- **Fast repo orientation**, wiki index + subsystem article lookup.
+- **Fast repo orientation**, wiki index and subsystem docs.
 - **Endpoint discovery**, route filtering by prefix/tag/method.
-- **Data-model visibility**, schema/model summaries from generated context.
-- **Risk estimation**, blast radius and hot-file ranking before refactors.
-- **Config clarity**, required/optional env var inspection.
-- **User-controlled generation**, refresh/init stay explicit, no hidden rewrites.
+- **Schema visibility**, model/table/field/relation summaries.
+- **Risk estimation**, blast radius and hot-file ranking.
+- **Config clarity**, env variable inspection.
+- **Explicit refresh/init**, no hidden regeneration.
 
 ## Agent tools
 
-All tools register when extension loads.
+All tools return same envelope:
+
+```ts
+interface ToolResult {
+  content: Array<{ type: 'text'; text: string }>;
+  details: Record<string, unknown>;
+}
+```
+
+`details` includes tool-specific metadata.
 
 ### `codesight_get_wiki_index`
-Read `.codesight/wiki/index.md` catalog. Best first move for “where things live”.
+Read wiki catalog for repo orientation.
+
+**Input schema**
+```ts
+{ directory?: string }
+```
+
+**Output details (typical)**
+```ts
+{ source: 'wiki/index.md'; path: string }
+```
 
 ### `codesight_get_wiki_article`
-Read one subsystem article by name, for example `overview`, `auth`, `database`, `payments`.
+Read one subsystem wiki article.
+
+**Input schema**
+```ts
+{ article: string; directory?: string }
+```
+
+**Output details (typical)**
+```ts
+{ article: string; source: string; path: string }
+```
 
 ### `codesight_get_summary`
-Compact project summary for quick orientation.
+Get compact project overview.
+
+**Input schema**
+```ts
+{ directory?: string }
+```
+
+**Output details (typical)**
+```ts
+{ source: string; path: string }
+```
 
 ### `codesight_get_routes`
-Get routes with optional filters:
-- `prefix` (example `/api/users`)
-- `tag` (subsystem)
-- `method` (`GET`, `POST`, `PUT`, `DELETE`)
+Get routes, optional filters.
+
+**Input schema**
+```ts
+{
+  directory?: string;
+  prefix?: string;
+  tag?: string;
+  method?: string; // GET|POST|PUT|DELETE etc
+}
+```
+
+**Output details (typical)**
+```ts
+{
+  source: string;
+  path: string;
+  filters: { prefix?: string; tag?: string; method?: string };
+  count?: number;
+}
+```
 
 ### `codesight_get_schema`
-Get schema overview or single model summary with `model` filter.
+Get full schema summary or one model view.
+
+**Input schema**
+```ts
+{ directory?: string; model?: string }
+```
+
+**Output details (typical)**
+```ts
+{ source: string; path: string; model?: string }
+```
 
 ### `codesight_get_blast_radius`
-Estimate impact before edits:
-- required: `file`
-- optional: `depth`
+Run blast-radius query before edits.
+
+**Input schema**
+```ts
+{ directory?: string; file: string; depth?: number } // depth 1..20
+```
+
+**Output details (typical)**
+```ts
+{
+  file: string;
+  root: string;
+  command: string;
+  ok: boolean;
+  exitCode?: number;
+  stderr?: string;
+}
+```
 
 ### `codesight_get_env`
-List detected env vars. Use `requiredOnly: true` for required-only view.
+Read detected environment variables.
+
+**Input schema**
+```ts
+{ directory?: string; requiredOnly?: boolean }
+```
+
+**Output details (typical)**
+```ts
+{ source: string; path: string; requiredOnly: boolean; count?: number }
+```
 
 ### `codesight_get_hot_files`
-Show most imported high-impact files, optional `limit`.
+Read highest-impact imported files.
+
+**Input schema**
+```ts
+{ directory?: string; limit?: number } // limit 1..50
+```
+
+**Output details (typical)**
+```ts
+{ source: string; path: string; limit: number; count?: number }
+```
 
 ### `codesight_refresh`
-Re-scan and refresh CodeSight artifacts.
-- `wiki: true` to regenerate wiki artifacts
-- `init: true` to regenerate AI context files
+Re-scan/regenerate CodeSight artifacts.
+
+**Input schema**
+```ts
+{ directory?: string; wiki?: boolean; init?: boolean }
+```
+
+**Output details**
+```ts
+{ command: string; ok: boolean; exitCode?: number; stderr?: string }
+```
+
+## Slash commands
+
+Yes, extension exposes slash commands:
+
+- `/codesight-refresh` - re-scan CodeSight artifacts
+- `/codesight-init` - generate wiki and AI context artifacts
+- `/wiki [article]` - show wiki index or one article
+- `/blast <file>` - run blast-radius for file
+
+After manifest/command changes, run `pi update` or reinstall package.
 
 ## Recommended workflow
 
-Rule of thumb:
-- broad discovery question -> `codesight_get_summary` or `codesight_get_wiki_index`
+- broad discovery -> `codesight_get_summary` or `codesight_get_wiki_index`
 - subsystem deep-dive -> `codesight_get_wiki_article`
 - endpoint question -> `codesight_get_routes`
 - model/table question -> `codesight_get_schema`
 - risky edit planning -> `codesight_get_blast_radius` + `codesight_get_hot_files`
-- setup/debug env issue -> `codesight_get_env`
-- stale or missing artifacts -> `codesight_refresh`
+- env setup/debug -> `codesight_get_env`
+- stale/missing artifacts -> `codesight_refresh`
 
-Then move to symbol-level tools (`lsp_navigation`, `pi_lsp_*`) once file/symbol grounded.
+Then move to symbol-level tools once scope grounded.
 
 ## Usage examples
-
-Natural prompts:
 
 ```text
 What endpoints exist under /api/admin?
@@ -112,19 +232,20 @@ Show required env vars for this project.
 ```
 
 ```text
-Give me architecture overview, then drill into database subsystem.
+Give architecture overview, then drill into database subsystem.
 ```
 
 ## Artifacts
 
-`pi-codesight` reads generated artifacts from `.codesight/`, including:
+`pi-codesight` reads generated files under `.codesight/`, including:
 - `.codesight/wiki/index.md`
 - `.codesight/wiki/*.md`
 - `.codesight/routes.md`
 - `.codesight/config.md`
-- other generated context files
+- `.codesight/CODESIGHT.md`
 
-If artifacts missing or stale, run refresh tool.
+If artifacts missing or stale, run refresh.
+For artifact generation behavior/details, see upstream [CodeSight project](https://github.com/Houseofmvps/codesight).
 
 ## Development
 
