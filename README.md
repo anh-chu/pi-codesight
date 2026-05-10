@@ -43,7 +43,9 @@ Big coding tasks start with discovery:
 - **Fast repo orientation**, wiki index and subsystem docs.
 - **Endpoint discovery**, route filtering by prefix/tag/method.
 - **Schema visibility**, model/table/field/relation summaries.
-- **Risk estimation**, blast radius and hot-file ranking.
+- **Risk estimation**, blast radius, hot-file ranking, and change-impact analysis.
+- **Dependency graph**, import relationships and transitive dependencies.
+- **Symbol index**, function/type/const location lookup.
 - **Config clarity**, env variable inspection.
 - **Explicit refresh/init**, no hidden regeneration.
 
@@ -169,7 +171,7 @@ Read detected environment variables.
 ```
 
 ### `codesight_get_hot_files`
-Read highest-impact imported files.
+Read highest-impact imported files, enriched with caller context from the import graph.
 
 **Input schema**
 ```ts
@@ -179,6 +181,89 @@ Read highest-impact imported files.
 **Output details (typical)**
 ```ts
 { source: string; path: string; limit: number; count?: number }
+```
+
+### `codesight_get_import_graph`
+Get structured dependency data from the CodeSight import map. Supports file-specific queries with transitive dependency resolution.
+
+**Input schema**
+```ts
+{
+  directory?: string;
+  file?: string;   // project-relative path; omit for repo-wide summary
+  depth?: number;  // max traversal depth for transitive deps (1..5)
+}
+```
+
+**Output details (file-specific)**
+```ts
+{
+  file: string;
+  depth: number;
+  directDeps: string[];
+  directDependents: string[];
+  transitiveDeps: string[];       // depth >= 2
+  transitiveDependents: string[]; // depth >= 2
+  omittedDependents: number;      // count from upstream truncation
+  found: boolean;
+}
+```
+
+**Output details (repo-wide, no file)**
+```ts
+{
+  fileCount: number;
+  orphanFiles: string[];  // imported by nothing
+  hubFiles: string[];     // imported by >= 3 files
+}
+```
+
+Note: CodeSight graph.md is truncated to high-impact targets. Use `codesight_get_blast_radius` for authoritative file-specific impact.
+
+### `codesight_get_symbol_index`
+Search symbols (functions, interfaces, classes, types, consts) across the codebase from CodeSight library data.
+
+**Input schema**
+```ts
+{
+  directory?: string;
+  query?: string;  // symbol name or file path substring
+  kind?: string;   // 'function' | 'interface' | 'class' | 'type' | 'const'
+}
+```
+
+**Output details (typical)**
+```ts
+{
+  query?: string;
+  kind?: string;
+  count: number;
+  matches: Array<{ symbol: string; file: string; kind: string }>;
+}
+```
+
+### `codesight_get_change_impact`
+Assess edit risk by combining import graph, test coverage, and upstream data. Quick artifact-only summary; use `codesight_get_blast_radius` for authoritative impact.
+
+**Input schema**
+```ts
+{
+  directory?: string;
+  file: string;  // project-relative path (required)
+}
+```
+
+**Output details (typical)**
+```ts
+{
+  file: string;
+  directlyAffected: string[];
+  omittedDependents: number;
+  testCoverage: 'full' | 'partial' | 'none';
+  testFiles: string[];
+  riskLevel: 'low' | 'medium' | 'high';
+  confidence: 'high' | 'partial';
+}
 ```
 
 ### `codesight_refresh`
@@ -211,7 +296,9 @@ After manifest/command changes, run `pi update` or reinstall package.
 - subsystem deep-dive -> `codesight_get_wiki_article`
 - endpoint question -> `codesight_get_routes`
 - model/table question -> `codesight_get_schema`
-- risky edit planning -> `codesight_get_blast_radius` + `codesight_get_hot_files`
+- risky edit planning -> `codesight_get_change_impact` (quick) or `codesight_get_blast_radius` (authoritative)
+- dependency tracing -> `codesight_get_import_graph` for a specific file or the whole repo
+- symbol lookup -> `codesight_get_symbol_index` to locate functions/types before reading source
 - env setup/debug -> `codesight_get_env`
 - stale/missing artifacts -> `codesight_refresh`
 
