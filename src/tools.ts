@@ -247,9 +247,9 @@ export function registerCodesightTools(pi: any) {
       description: 'Read the codesight wiki index for fast repo orientation',
       promptSnippet: 'Read codesight wiki catalog for fast repo orientation',
       promptGuidelines: [
-        'ALWAYS call this at session start before any grep, find, or read operations.',
-        'Do NOT read .codesight/ files directly — call this tool instead.',
-        'This replaces manual file exploration for repo orientation.',
+        'STEP 1 (orientation). Call this at session start before any exploration.',
+        'Do NOT use grep, find, or read first.',
+        'After this, use codesight_get_wiki_article for subsystems, then trace specific symbols with your language server or symbol search tools.'
       ],
       parameters: ROOT_SCHEMA,
       execute: async (_toolCallId: string, params: { directory?: string }) => {
@@ -263,8 +263,10 @@ export function registerCodesightTools(pi: any) {
       description: 'Read one codesight wiki article by subsystem name',
       promptSnippet: 'Read one codesight wiki article by subsystem name',
       promptGuidelines: [
-        'ALWAYS call this before reading source files for a subsystem (auth, database, payments, etc.).',
-        'Do NOT grep for subsystem symbols before calling this first.',
+        'STEP 1 (subsystem orientation). Call this when investigating a subsystem (auth, database, payments, etc.).',
+        'Do NOT grep for subsystem code first.',
+        'After reading, trace specific symbols with your language server or symbol search tools.',
+        'Wiki articles tell you WHERE things live, not how they work.',
       ],
       parameters: {
         type: 'object',
@@ -285,8 +287,9 @@ export function registerCodesightTools(pi: any) {
       description: 'Get compact codesight project overview',
       promptSnippet: 'Get compact codesight project overview',
       promptGuidelines: [
-        'Call this FIRST for any broad architecture or codebase question.',
-        'Do NOT open source files to understand project structure — call this instead.',
+        'STEP 1 (architecture). Call this for any broad "what is this repo?" question.',
+        'Do NOT open source files to understand project structure.',
+        'After this, drill down with codesight_get_wiki_article or codesight_get_routes.',
       ],
       parameters: ROOT_SCHEMA,
       execute: async (_toolCallId: string, params: { directory?: string }) => {
@@ -300,7 +303,8 @@ export function registerCodesightTools(pi: any) {
       description: 'Get routes filtered by prefix, tag, or HTTP method',
       promptSnippet: 'Get codesight routes filtered by prefix, tag, or method',
       promptGuidelines: [
-        'ALWAYS call this before grepping for routes or opening route files.',
+        'STEP 2 (structural query). Call this for endpoint questions after orientation.',
+        'Do NOT grep for route definitions.',
         'Use prefix/method/tag filters to narrow results instead of reading files.',
       ],
       parameters: ROUTE_SCHEMA,
@@ -315,8 +319,8 @@ export function registerCodesightTools(pi: any) {
       description: 'Get schema or one model summary',
       promptSnippet: 'Get codesight schema or one model summary',
       promptGuidelines: [
-        'ALWAYS call this before reading schema or migration files manually.',
-        'Do NOT grep for model definitions — call this instead.',
+        'STEP 2 (structural query). Call this for model/table questions after orientation.',
+        'Do NOT grep for model definitions.',
       ],
       parameters: SCHEMA_SCHEMA,
       execute: async (_toolCallId: string, params: { directory?: string; model?: string }) => {
@@ -330,8 +334,9 @@ export function registerCodesightTools(pi: any) {
       description: 'Analyze impact before changing a file',
       promptSnippet: 'Analyze blast radius for file changes using codesight graph',
       promptGuidelines: [
-        'ALWAYS call this before modifying any shared or high-impact file.',
-        'Do NOT skip this step and guess impact — call it first.',
+        'STEP 3 (pre-edit). Call this BEFORE modifying any file with logic or structure changes.',
+        'Do not skip this and guess impact.',
+        'After blast radius, if the change is safe, verify affected symbols with your language server or symbol search tools.'
       ],
       parameters: BLAST_SCHEMA,
       execute: async (_toolCallId: string, params: { directory?: string; file: string; depth?: number }) => {
@@ -366,8 +371,8 @@ export function registerCodesightTools(pi: any) {
       description: 'Get environment variables detected by codesight',
       promptSnippet: 'Get environment variables detected by codesight',
       promptGuidelines: [
-        'ALWAYS call this before reading .env files or grepping for environment variable names.',
-        'Do NOT search source code for env vars manually — call this instead.',
+        'STEP 2 (config). Call this before reading .env files or grepping for env vars.',
+        'Do NOT search source code for env vars manually.',
       ],
       parameters: ENV_SCHEMA,
       execute: async (_toolCallId: string, params: { directory?: string; required_only?: boolean; requiredOnly?: boolean }) => {
@@ -381,9 +386,9 @@ export function registerCodesightTools(pi: any) {
       description: 'Get the most imported high-impact files',
       promptSnippet: 'Get most imported high-impact files from codesight',
       promptGuidelines: [
-        'ALWAYS call this at session start to identify which files carry the most risk.',
-        'Call this before any refactor that touches shared utilities or core modules.',
-        'Do NOT rely on gut feel for import frequency — call this first.',
+        'STEP 2 (risk assessment). Call this before refactoring or touching shared code.',
+        'Cross-reference with codesight_get_blast_radius before editing.',
+        'Do NOT rely on gut feel for import frequency.',
       ],
       parameters: HOT_FILES_SCHEMA,
       execute: async (_toolCallId: string, params: { directory?: string; limit?: number }) => {
@@ -398,7 +403,7 @@ export function registerCodesightTools(pi: any) {
       promptSnippet: 'Refresh codesight-generated repo context files',
       promptGuidelines: [
         'Call this when codesight tools return empty or stale results.',
-        'Do NOT proceed with manual file reads if codesight artifacts are missing — refresh first.',
+        'Do NOT fall back to manual exploration if artifacts are missing.',
       ],
       parameters: REFRESH_SCHEMA,
       execute: async (_toolCallId: string, params: { directory?: string }) => {
