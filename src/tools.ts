@@ -155,7 +155,7 @@ const SYMBOL_INDEX_SCHEMA = {
   properties: {
     directory: { type: 'string', description: 'Project directory to read from' },
     query: { type: 'string', description: 'Symbol name or file path substring to search for' },
-    kind: { type: 'string', description: 'Filter by symbol kind: function, interface, class, type, const' },
+    kind: { type: 'string', enum: ['function', 'interface', 'class', 'type', 'const'], description: 'Filter by symbol kind' },
   },
 };
 
@@ -164,7 +164,6 @@ const CHANGE_IMPACT_SCHEMA = {
   properties: {
     directory: { type: 'string', description: 'Project directory to read from' },
     file: { type: 'string', description: 'Project-relative file path to analyze' },
-    symbol: { type: 'string', description: 'Optional symbol name within the file' },
   },
   required: ['file'],
 };

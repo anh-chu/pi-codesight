@@ -168,6 +168,7 @@ export function readEnv(root = '.', requiredOnly = false) {
 type ImportGraph = {
   dependents: Map<string, string[]>;
   dependencies: Map<string, string[]>;
+  omittedDependents: Map<string, number>;
   files: Set<string>;
 };
 
@@ -180,6 +181,7 @@ function parseImportMap(content: string): ImportGraph {
 
   const dependents = new Map<string, string[]>();
   const dependencies = new Map<string, string[]>();
+  const omittedDependents = new Map<string, number>();
   const files = new Set<string>();
 
   for (const line of section) {
@@ -192,19 +194,12 @@ function parseImportMap(content: string): ImportGraph {
     files.add(target);
 
     // Parse dependents: backtick-wrapped filenames, optionally followed by +N more
-    const depList = rhs
-      .replace(/\+\d+\s*more/g, '')
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .map((s) => {
-        const m = s.match(/`([^`]+)`/);
-        return m ? m[1].trim() : s;
-      })
-      .filter(Boolean);
+    const importers = Array.from(rhs.matchAll(/`([^`]+)`/g), (m) => m[1].trim());
+    const omitted = Number(rhs.match(/\+\s*(\d+)\s*more/i)?.[1] ?? 0);
 
-    dependents.set(target, depList);
-    for (const dep of depList) {
+    dependents.set(target, [...new Set(importers)]);
+    if (omitted > 0) omittedDependents.set(target, omitted);
+    for (const dep of importers) {
       files.add(dep);
       const depsOfDep = dependencies.get(dep) ?? [];
       if (!depsOfDep.includes(target)) {
@@ -220,7 +215,7 @@ function parseImportMap(content: string): ImportGraph {
     if (!dependencies.has(file)) dependencies.set(file, []);
   }
 
-  return { dependents, dependencies, files };
+  return { dependents, dependencies, omittedDependents, files };
 }
 
 function buildImportGraph(root: string): ImportGraph | null {
@@ -259,27 +254,42 @@ export function readImportGraph(root = '.', file?: string, depth = 1) {
     };
   }
 
-  const { dependents, dependencies, files } = graph;
+  const { dependents, dependencies, omittedDependents, files } = graph;
   const hubThreshold = 3;
 
-  if (file && files.has(file)) {
-    const directDeps = dependencies.get(file) ?? [];
-    const directDependents = dependents.get(file) ?? [];
-    const transitiveDeps = depth > 1 ? transitive(dependencies, file, depth) : [];
-    const transitiveDependents = depth > 1 ? transitive(dependents, file, depth) : [];
+  if (file) {
+    const normalized = file.replace(/^\.\//, '');
+    if (!files.has(normalized)) {
+      return {
+        content: formatCompactSection(`Import graph: ${normalized}`, [
+          '- file not present in the parsed CodeSight import map',
+          '- note: CodeSight graph.md is truncated to high-impact targets',
+          '- hint: run codesight_get_blast_radius for file-specific impact',
+        ]),
+        details: { file: normalized, depth, found: false, count: 0 },
+      };
+    }
 
+    const directDeps = dependencies.get(normalized) ?? [];
+    const directDependents = dependents.get(normalized) ?? [];
+    const omitted = omittedDependents.get(normalized) ?? 0;
+    const transitiveDeps = depth > 1 ? transitive(dependencies, normalized, depth) : [];
+    const transitiveDependents = depth > 1 ? transitive(dependents, normalized, depth) : [];
+
+    const depLabel = omitted > 0 ? `${directDependents.length} + ${omitted} omitted` : `${directDependents.length}`;
     const lines = [
       `direct deps (${directDeps.length}): ${directDeps.join(', ') || 'none'}`,
-      `direct dependents (${directDependents.length}): ${directDependents.join(', ') || 'none'}`,
+      `direct dependents (${depLabel}): ${directDependents.join(', ') || 'none'}`,
     ];
     if (depth > 1) {
       lines.push(`transitive deps (${transitiveDeps.length}): ${transitiveDeps.join(', ') || 'none'}`);
       lines.push(`transitive dependents (${transitiveDependents.length}): ${transitiveDependents.join(', ') || 'none'}`);
     }
+    if (omitted > 0) lines.push('- note: some importers omitted by upstream truncation');
 
     return {
-      content: formatCompactSection(`Import graph: ${file}`, lines.map((l) => `- ${l}`)),
-      details: { file, depth, directDeps, directDependents, transitiveDeps, transitiveDependents },
+      content: formatCompactSection(`Import graph: ${normalized}`, lines.map((l) => `- ${l}`)),
+      details: { file: normalized, depth, directDeps, directDependents, transitiveDeps, transitiveDependents, omittedDependents: omitted, found: true },
     };
   }
 
@@ -302,6 +312,8 @@ type SymbolEntry = {
   kind: string;
 };
 
+const EXPORT_PATTERN = /\b(function|interface|class|type|const)\s+([A-Za-z_$][\w$]*)/g;
+
 function parseLibraries(content: string): SymbolEntry[] {
   const section = sectionOrFallback(
     content,
@@ -313,19 +325,25 @@ function parseLibraries(content: string): SymbolEntry[] {
   let currentFile = '';
 
   for (const line of section) {
-    const fileMatch = line.match(/^-\s+`([^`]+)`/);
+    // Inline: - `src/commands.ts` — function registerCommands: (pi) => void
+    // Multiline header: - `src/codesight.ts`
+    const fileMatch = line.match(/^-\s+`([^`]+)`(?:\s+—\s+(.+))?/);
     if (fileMatch) {
       currentFile = fileMatch[1].trim();
+      // Parse inline exports on the same line
+      if (fileMatch[2]) {
+        for (const match of fileMatch[2].matchAll(EXPORT_PATTERN)) {
+          entries.push({ kind: match[1], symbol: match[2], file: currentFile });
+        }
+      }
       continue;
     }
 
-    const symMatch = line.match(/^\s+-\s+(function|interface|class|type|const)\s+([A-Za-z0-9_]+)/);
-    if (symMatch && currentFile) {
-      entries.push({
-        symbol: symMatch[2],
-        file: currentFile,
-        kind: symMatch[1],
-      });
+    // Multiline indented: `  - function name: ...`
+    if (currentFile) {
+      for (const match of line.matchAll(EXPORT_PATTERN)) {
+        entries.push({ kind: match[1], symbol: match[2], file: currentFile });
+      }
     }
   }
 
@@ -351,8 +369,9 @@ export function readSymbolIndex(root = '.', query?: string, kind?: string) {
   }
 
   const q = query?.toLowerCase();
+  const normalizedKind = kind?.toLowerCase();
   const matches = index.filter((entry) => {
-    const kindOk = !kind || entry.kind === kind;
+    const kindOk = !normalizedKind || entry.kind === normalizedKind;
     const queryOk = !q || entry.symbol.toLowerCase().includes(q) || entry.file.toLowerCase().includes(q);
     return kindOk && queryOk;
   });
@@ -365,8 +384,10 @@ export function readSymbolIndex(root = '.', query?: string, kind?: string) {
 }
 
 export function readChangeImpact(root = '.', file: string) {
+  const normalized = file.replace(/^\.\//, '');
   const graph = buildImportGraph(root);
-  const directlyAffected = graph?.dependents.get(file) ?? [];
+  const directlyAffected = graph?.dependents.get(normalized) ?? [];
+  const omitted = graph?.omittedDependents.get(normalized) ?? 0;
 
   // Coverage
   const coveragePath = artifactPath(root, 'coverage.md');
@@ -381,57 +402,27 @@ export function readChangeImpact(root = '.', file: string) {
     if (tfMatch) testFiles.push(`${tfMatch[1]} test file(s)`);
   }
 
-  // Routes heuristic
-  const routesPath = artifactPath(root, 'routes.md');
-  const routesContent = readTextIfExists(routesPath);
-  const relatedRoutes: string[] = [];
-  if (routesContent) {
-    const section = extractSection(routesContent, /^#\s+Routes$/i);
-    const fileBase = file.replace(/\.\w+$/, '').replace(/.*[\/]/, '');
-    for (const line of section) {
-      if (line.toLowerCase().includes(fileBase.toLowerCase())) {
-        const routeMatch = line.match(/`[A-Z]+`\s+`[^`]+`/);
-        if (routeMatch) relatedRoutes.push(routeMatch[0].replace(/`/g, ''));
-      }
-    }
-  }
-
-  // Models heuristic
-  const codesightPath = artifactPath(root, 'CODESIGHT.md');
-  const codesightContent = readTextIfExists(codesightPath);
-  const relatedModels: string[] = [];
-  if (codesightContent) {
-    const section = sectionOrFallback(
-      codesightContent,
-      [/^#\s+Schema$/i, /^##\s+Models$/i, /^##\s+Tables$/i],
-      () => [],
-    );
-    const fileBase = file.replace(/\.\w+$/, '').replace(/.*[\/]/, '');
-    for (const line of section) {
-      const modelMatch = line.match(/`([A-Za-z0-9_]+)`/);
-      if (modelMatch && line.toLowerCase().includes(fileBase.toLowerCase())) {
-        relatedModels.push(modelMatch[1]);
-      }
-    }
-  }
-
   // Risk level
-  const depCount = directlyAffected.length;
+  const depCount = directlyAffected.length + omitted;
   let riskLevel: 'low' | 'medium' | 'high' = 'low';
   if (depCount >= 5 && testCoverage !== 'full') riskLevel = 'high';
   else if (depCount >= 2 || testCoverage === 'none') riskLevel = 'medium';
 
+  const depLabel = omitted > 0 ? `${directlyAffected.length} + ${omitted} omitted` : `${directlyAffected.length}`;
+  const confidence = omitted > 0 ? 'partial' : 'high';
+
   const lines = [
-    `directly affected: ${directlyAffected.join(', ') || 'none'}`,
+    `directly affected: ${depLabel}`,
     `test coverage: ${testCoverage}${testFiles.length ? ` (${testFiles.join(', ')})` : ''}`,
     `risk level: ${riskLevel}`,
+    `confidence: ${confidence}`,
   ];
-  if (relatedRoutes.length) lines.push(`related routes: ${relatedRoutes.join(', ')}`);
-  if (relatedModels.length) lines.push(`related models: ${relatedModels.join(', ')}`);
+  if (omitted > 0) lines.push('- note: some dependents omitted by upstream truncation');
+  lines.push('- hint: run codesight_get_blast_radius for authoritative impact');
 
   return {
-    content: formatCompactSection(`Change impact: ${file}`, lines.map((l) => `- ${l}`)),
-    details: { file, directlyAffected, testCoverage, testFiles, riskLevel, routes: relatedRoutes, models: relatedModels },
+    content: formatCompactSection(`Change impact: ${normalized}`, lines.map((l) => `- ${l}`)),
+    details: { file: normalized, directlyAffected, omittedDependents: omitted, testCoverage, testFiles, riskLevel, confidence },
   };
 }
 

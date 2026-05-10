@@ -47,6 +47,18 @@ test('import graph parses dependency map', () => {
   assert.deepEqual(result.details.directDependents, ['src/b.ts', 'src/c.ts']);
   assert.deepEqual(result.details.directDeps, []);
   assert.deepEqual(result.details.transitiveDependents, ['src/d.ts']);
+  assert.equal(result.details.omittedDependents, 0);
+  assert.equal(result.details.found, true);
+});
+
+test('import graph preserves truncation metadata', () => {
+  const root = makeTempProject({
+    '.codesight/graph.md': '# Dependency Graph\n\n## Import Map (who imports what)\n\n- `src/a.ts` ← `src/b.ts`, `src/c.ts` +3 more\n',
+  });
+
+  const result = readImportGraph(root, 'src/a.ts');
+  assert.equal(result.details.omittedDependents, 3);
+  assert.match(result.content, /omitted/);
 });
 
 test('import graph returns repo summary when no file given', () => {
@@ -82,14 +94,75 @@ test('change impact combines graph, coverage, and routes', () => {
   const root = makeTempProject({
     '.codesight/graph.md': '# Dependency Graph\n\n## Import Map (who imports what)\n\n- `src/auth.ts` ← `src/api.ts`, `src/app.ts`\n',
     '.codesight/coverage.md': '# Test Coverage\n\n> **45%** of routes and models are covered by tests\n> 3 test files found\n',
-    '.codesight/routes.md': '# Routes\n\n- `POST` `/api/login` [auth]\n',
-    '.codesight/CODESIGHT.md': '# CODESIGHT\n\n## Models\n\n- `User` model in `src/auth.ts`\n',
   });
 
   const result = readChangeImpact(root, 'src/auth.ts');
   assert.equal(result.details.riskLevel, 'medium');
   assert.deepEqual(result.details.directlyAffected, ['src/api.ts', 'src/app.ts']);
   assert.equal(result.details.testCoverage, 'partial');
-  assert.ok(result.details.routes.length > 0);
-  assert.ok(result.details.models.includes('User'));
+  assert.equal(result.details.confidence, 'high');
+});
+
+test('change impact reports partial confidence when graph is truncated', () => {
+  const root = makeTempProject({
+    '.codesight/graph.md': '# Dependency Graph\n\n## Import Map (who imports what)\n\n- `src/auth.ts` ← `src/api.ts` +2 more\n',
+  });
+
+  const result = readChangeImpact(root, 'src/auth.ts');
+  assert.equal(result.details.confidence, 'partial');
+  assert.equal(result.details.omittedDependents, 2);
+});
+
+test('symbol index parses inline exports', () => {
+  const root = makeTempProject({
+    '.codesight/libs.md': '# Libraries\n\n- `src/commands.ts` — function registerCommands: (pi) => void\n- `src/utils.ts`\n  - function helper: () => void\n  - type Result: {}\n',
+  });
+
+  const result = readSymbolIndex(root);
+  assert.equal(result.details.count, 3);
+  assert.ok((result.details.matches as any[]).some((m) => m.symbol === 'registerCommands'));
+  assert.ok((result.details.matches as any[]).some((m) => m.symbol === 'helper'));
+  assert.ok((result.details.matches as any[]).some((m) => m.symbol === 'Result'));
+});
+
+test('import graph returns not-found when file is absent', () => {
+  const root = makeTempProject({
+    '.codesight/graph.md': '# Dependency Graph\n\n## Import Map (who imports what)\n\n- `src/a.ts` ← `src/b.ts`\n',
+  });
+
+  const result = readImportGraph(root, 'src/missing.ts');
+  assert.equal(result.details.found, false);
+  assert.match(result.content, /not present/);
+});
+
+test('import graph normalizes ./prefix', () => {
+  const root = makeTempProject({
+    '.codesight/graph.md': '# Dependency Graph\n\n## Import Map (who imports what)\n\n- `src/a.ts` ← `src/b.ts`\n',
+  });
+
+  const result = readImportGraph(root, './src/a.ts');
+  assert.equal(result.details.found, true);
+  assert.deepEqual(result.details.directDependents, ['src/b.ts']);
+});
+
+test('import graph handles cycles without looping', () => {
+  const root = makeTempProject({
+    '.codesight/graph.md': '# Dependency Graph\n\n## Import Map (who imports what)\n\n- `src/a.ts` ← `src/b.ts`\n- `src/b.ts` ← `src/a.ts`\n',
+  });
+
+  const result = readImportGraph(root, 'src/a.ts', 3);
+  assert.deepEqual(result.details.directDependents, ['src/b.ts']);
+  // b is direct, so transitive should be empty
+  assert.deepEqual(result.details.transitiveDependents, []);
+});
+
+test('import graph transitive excludes direct neighbors', () => {
+  const root = makeTempProject({
+    '.codesight/graph.md': '# Dependency Graph\n\n## Import Map (who imports what)\n\n- `src/a.ts` ← `src/b.ts`, `src/c.ts`\n- `src/b.ts` ← `src/c.ts`, `src/d.ts`\n',
+  });
+
+  const result = readImportGraph(root, 'src/a.ts', 3);
+  assert.deepEqual(result.details.directDependents, ['src/b.ts', 'src/c.ts']);
+  // c is direct, so only d should appear as transitive
+  assert.deepEqual(result.details.transitiveDependents, ['src/d.ts']);
 });
