@@ -4,11 +4,14 @@ import { fileURLToPath } from 'node:url';
 import { formatCompactSection, truncateText } from './format.ts';
 import { projectRoot, renderCodesightCommand, resolveProjectPath, runCodesight } from './codesight.ts';
 import {
+  readChangeImpact,
   readEnv,
   readHotFiles,
+  readImportGraph,
   readRoutes,
   readSchema,
   readSummary,
+  readSymbolIndex,
   readWikiArticle,
   readWikiIndex,
 } from './queries.ts';
@@ -136,6 +139,34 @@ const HOT_FILES_SCHEMA = {
     directory: { type: 'string', description: 'Project directory to read from' },
     limit: { type: 'number', description: 'Maximum number of files to return', minimum: 1, maximum: 50 },
   },
+};
+
+const IMPORT_GRAPH_SCHEMA = {
+  type: 'object',
+  properties: {
+    directory: { type: 'string', description: 'Project directory to read from' },
+    file: { type: 'string', description: 'Project-relative file path to analyze (omit for repo-wide summary)' },
+    depth: { type: 'number', description: 'Max traversal depth for transitive deps/dependents', minimum: 1, maximum: 5 },
+  },
+};
+
+const SYMBOL_INDEX_SCHEMA = {
+  type: 'object',
+  properties: {
+    directory: { type: 'string', description: 'Project directory to read from' },
+    query: { type: 'string', description: 'Symbol name or file path substring to search for' },
+    kind: { type: 'string', description: 'Filter by symbol kind: function, interface, class, type, const' },
+  },
+};
+
+const CHANGE_IMPACT_SCHEMA = {
+  type: 'object',
+  properties: {
+    directory: { type: 'string', description: 'Project directory to read from' },
+    file: { type: 'string', description: 'Project-relative file path to analyze' },
+    symbol: { type: 'string', description: 'Optional symbol name within the file' },
+  },
+  required: ['file'],
 };
 
 const REFRESH_SCHEMA = {
@@ -393,6 +424,54 @@ export function registerCodesightTools(pi: any) {
       parameters: HOT_FILES_SCHEMA,
       execute: async (_toolCallId: string, params: { directory?: string; limit?: number }) => {
         const result = readHotFiles(rootForParams(params), params.limit ?? 10);
+        return textResult(result.content, result.details as Record<string, unknown>);
+      },
+    },
+    {
+      name: 'codesight_get_import_graph',
+      label: 'CodeSight Import Graph',
+      description: 'Get structured dependency data from codesight import map',
+      promptSnippet: 'Get import graph for a file or the whole repo',
+      promptGuidelines: [
+        'STEP 2 (structural query). Call this to understand file dependencies before refactoring.',
+        'Do NOT guess import relationships by reading files manually.',
+        'After this, call codesight_get_blast_radius before editing high-dependency files.',
+      ],
+      parameters: IMPORT_GRAPH_SCHEMA,
+      execute: async (_toolCallId: string, params: { directory?: string; file?: string; depth?: number }) => {
+        const result = readImportGraph(rootForParams(params), params.file, params.depth ?? 1);
+        return textResult(result.content, result.details as Record<string, unknown>);
+      },
+    },
+    {
+      name: 'codesight_get_symbol_index',
+      label: 'CodeSight Symbol Index',
+      description: 'Search symbols across the codebase from codesight library data',
+      promptSnippet: 'Search symbol index for function or type locations',
+      promptGuidelines: [
+        'STEP 2 (structural query). Call this to confirm where a symbol lives before tracing it.',
+        'Do NOT grep for symbol definitions first.',
+        'After locating the symbol, read the source file or trace with your language server.',
+      ],
+      parameters: SYMBOL_INDEX_SCHEMA,
+      execute: async (_toolCallId: string, params: { directory?: string; query?: string; kind?: string }) => {
+        const result = readSymbolIndex(rootForParams(params), params.query, params.kind);
+        return textResult(result.content, result.details as Record<string, unknown>);
+      },
+    },
+    {
+      name: 'codesight_get_change_impact',
+      label: 'CodeSight Change Impact',
+      description: 'Assess edit risk by combining import graph, coverage, and related routes/models',
+      promptSnippet: 'Analyze change impact before editing a file',
+      promptGuidelines: [
+        'STEP 3 (pre-edit). Call this BEFORE modifying any file with logic or structure changes.',
+        'Do not skip this and guess impact.',
+        'After impact analysis, if risk is high, add tests before editing.',
+      ],
+      parameters: CHANGE_IMPACT_SCHEMA,
+      execute: async (_toolCallId: string, params: { directory?: string; file: string; symbol?: string }) => {
+        const result = readChangeImpact(rootForParams(params), params.file);
         return textResult(result.content, result.details as Record<string, unknown>);
       },
     },

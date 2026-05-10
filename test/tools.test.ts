@@ -44,6 +44,9 @@ test('registers expected codesight tools', () => {
       'codesight_get_blast_radius',
       'codesight_get_env',
       'codesight_get_hot_files',
+      'codesight_get_import_graph',
+      'codesight_get_symbol_index',
+      'codesight_get_change_impact',
       'codesight_refresh',
     ],
   );
